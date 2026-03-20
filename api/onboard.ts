@@ -2,6 +2,7 @@ import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { Client } from "@notionhq/client";
 
 const GHL_BASE = "https://services.leadconnectorhq.com";
+const DRY_RUN = process.env.DRY_RUN === "true";
 
 interface FormPayload {
   company_name: string;
@@ -59,6 +60,13 @@ async function createGHLSubAccount(data: FormPayload) {
     },
   };
 
+  if (DRY_RUN) {
+    const fakeId = `dry-run-${Date.now()}`;
+    console.log("[DRY_RUN] Would create GHL sub-account:", JSON.stringify(body, null, 2));
+    console.log(`[DRY_RUN] Returning fake location id: ${fakeId}`);
+    return { id: fakeId, name: data.company_name };
+  }
+
   const res = await fetch(`${GHL_BASE}/locations/`, {
     method: "POST",
     headers: {
@@ -84,6 +92,12 @@ async function createGHLSubAccount(data: FormPayload) {
 // ---------------------------------------------------------------------------
 async function applySnapshot(locationId: string) {
   const snapshotId = (process.env.GHL_SNAPSHOT_ID ?? "").replace(/^id:\s*/i, "");
+
+  if (DRY_RUN) {
+    console.log(`[DRY_RUN] Would apply snapshot ${snapshotId} to location ${locationId}`);
+    console.log(`[DRY_RUN] PUT ${GHL_BASE}/locations/${locationId}/templates/`, JSON.stringify({ snapshotId }));
+    return { ok: true };
+  }
 
   const res = await fetch(
     `${GHL_BASE}/locations/${locationId}/templates/`,
@@ -191,6 +205,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         .json({ error: "Missing required fields: company_name, contact email" });
     }
 
+    if (DRY_RUN) {
+      console.log("[DRY_RUN] Dry run mode enabled — GHL API calls will be skipped");
+    }
+
     // Step 1: Create GHL sub-account
     const location = await createGHLSubAccount(data);
 
@@ -206,6 +224,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(200).json({
       success: true,
       locationId: location.id,
+      dryRun: DRY_RUN,
     });
   } catch (err: any) {
     console.error("Onboard error:", err);
