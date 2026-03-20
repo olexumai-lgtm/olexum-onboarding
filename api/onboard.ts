@@ -292,7 +292,9 @@ async function logToNotion(data: FormPayload, locationId: string) {
     "Signature Name": rt(data.signature_name),
     "Signer Title": rt(data.signer_title),
     "Signer Email": { email: data.signer_email || null },
-    "Date Signed": { date: { start: data.date_signed || null } },
+    ...(data.date_signed != null
+      ? { "Date Signed": { date: { start: data.date_signed || new Date().toISOString().split("T")[0] } } }
+      : {}),
   };
 
   console.log("[Notion] Creating page with properties:", JSON.stringify(properties, null, 2));
