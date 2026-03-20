@@ -127,25 +127,8 @@ async function applySnapshot(locationId: string) {
 // ---------------------------------------------------------------------------
 // 3. Log Client to Notion
 // ---------------------------------------------------------------------------
-async function ensureNotionSchema(notion: Client, databaseId: string) {
-  console.log("[Notion] ensureNotionSchema called with databaseId:", databaseId);
-
-  let db;
-  try {
-    console.log("[Notion] Retrieving database schema...");
-    db = await notion.databases.retrieve({ database_id: databaseId });
-    console.log("[Notion] Database retrieved successfully. Title:", JSON.stringify((db as any).title));
-  } catch (err: any) {
-    console.error("[Notion] FAILED to retrieve database:", err.code, err.status, err.message);
-    console.error("[Notion] Full error:", JSON.stringify(err, null, 2));
-    throw err;
-  }
-
-  console.log("[Notion] Database response keys:", Object.keys(db).join(", "));
-  const existing = (db as any).properties ?? {};
-  console.log("[Notion] Existing properties:", Object.keys(existing).join(", "));
-
-  const required: Record<string, object> = {
+async function ensureNotionColumns(apiKey: string, databaseId: string) {
+  const requiredProperties: Record<string, object> = {
     Name: { title: {} },
     Email: { email: {} },
     Phone: { phone_number: {} },
@@ -177,28 +160,21 @@ async function ensureNotionSchema(notion: Client, databaseId: string) {
     "Date Signed": { date: {} },
   };
 
-  const missing: Record<string, object> = {};
-  for (const [name, schema] of Object.entries(required)) {
-    if (!existing[name]) {
-      missing[name] = schema;
-    }
-  }
+  const res = await fetch(`https://api.notion.com/v1/databases/${databaseId}`, {
+    method: "PATCH",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+      "Notion-Version": "2022-06-28",
+    },
+    body: JSON.stringify({ properties: requiredProperties }),
+  });
 
-  if (Object.keys(missing).length > 0) {
-    console.log("[Notion] Missing properties to add:", Object.keys(missing).join(", "));
-    try {
-      const updateRes = await notion.databases.update({
-        database_id: databaseId,
-        properties: missing,
-      });
-      console.log("[Notion] Database schema updated successfully");
-    } catch (err: any) {
-      console.error("[Notion] FAILED to update database schema:", err.code, err.status, err.message);
-      console.error("[Notion] Full error:", JSON.stringify(err, null, 2));
-      throw err;
-    }
+  if (!res.ok) {
+    const text = await res.text();
+    console.error("[Notion] Failed to ensure columns:", res.status, text);
   } else {
-    console.log("[Notion] All required properties already exist");
+    console.log("[Notion] Database columns ensured successfully");
   }
 }
 
@@ -226,18 +202,7 @@ async function logToNotion(data: FormPayload, locationId: string) {
   const contact = data.contact_info ?? {};
   const size = data.company_size ?? {};
 
-  try {
-    await ensureNotionSchema(notion, databaseId);
-  } catch (err: any) {
-    console.warn("[Notion] ensureNotionSchema failed, skipping schema check:", err.message);
-    // Log full database response for debugging
-    try {
-      const db = await notion.databases.retrieve({ database_id: databaseId });
-      console.log("[Notion] Full db response:", JSON.stringify(db));
-    } catch (fetchErr: any) {
-      console.warn("[Notion] Could not fetch db for debug logging:", fetchErr.message);
-    }
-  }
+  await ensureNotionColumns(apiKey, databaseId);
 
   const industry = resolveOther(data.industry, data.industry_other);
   const timezone = resolveOther(data.timezone, data.timezone_other);
@@ -292,9 +257,7 @@ async function logToNotion(data: FormPayload, locationId: string) {
     "Signature Name": rt(data.signature_name),
     "Signer Title": rt(data.signer_title),
     "Signer Email": { email: data.signer_email || null },
-    ...(data.date_signed != null
-      ? { "Date Signed": { date: { start: data.date_signed || new Date().toISOString().split("T")[0] } } }
-      : {}),
+    "Date Signed": { date: { start: data.date_signed || new Date().toISOString().split("T")[0] } },
   };
 
   console.log("[Notion] Creating page with properties:", JSON.stringify(properties, null, 2));
@@ -308,7 +271,6 @@ async function logToNotion(data: FormPayload, locationId: string) {
   } catch (err: any) {
     console.error("[Notion] FAILED to create page:", err.code, err.status, err.message);
     console.error("[Notion] Full error:", JSON.stringify(err, null, 2));
-    throw err;
   }
 }
 
