@@ -141,7 +141,8 @@ async function ensureNotionSchema(notion: Client, databaseId: string) {
     throw err;
   }
 
-  const existing = db.properties;
+  console.log("[Notion] Database response keys:", Object.keys(db).join(", "));
+  const existing = (db as any).properties ?? {};
   console.log("[Notion] Existing properties:", Object.keys(existing).join(", "));
 
   const required: Record<string, object> = {
