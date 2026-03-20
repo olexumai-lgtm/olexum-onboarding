@@ -226,7 +226,18 @@ async function logToNotion(data: FormPayload, locationId: string) {
   const contact = data.contact_info ?? {};
   const size = data.company_size ?? {};
 
-  await ensureNotionSchema(notion, databaseId);
+  try {
+    await ensureNotionSchema(notion, databaseId);
+  } catch (err: any) {
+    console.warn("[Notion] ensureNotionSchema failed, skipping schema check:", err.message);
+    // Log full database response for debugging
+    try {
+      const db = await notion.databases.retrieve({ database_id: databaseId });
+      console.log("[Notion] Full db response:", JSON.stringify(db));
+    } catch (fetchErr: any) {
+      console.warn("[Notion] Could not fetch db for debug logging:", fetchErr.message);
+    }
+  }
 
   const industry = resolveOther(data.industry, data.industry_other);
   const timezone = resolveOther(data.timezone, data.timezone_other);
