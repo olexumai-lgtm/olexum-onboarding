@@ -128,8 +128,21 @@ async function applySnapshot(locationId: string) {
 // 3. Log Client to Notion
 // ---------------------------------------------------------------------------
 async function ensureNotionSchema(notion: Client, databaseId: string) {
-  const db = await notion.databases.retrieve({ database_id: databaseId });
+  console.log("[Notion] ensureNotionSchema called with databaseId:", databaseId);
+
+  let db;
+  try {
+    console.log("[Notion] Retrieving database schema...");
+    db = await notion.databases.retrieve({ database_id: databaseId });
+    console.log("[Notion] Database retrieved successfully. Title:", JSON.stringify((db as any).title));
+  } catch (err: any) {
+    console.error("[Notion] FAILED to retrieve database:", err.code, err.status, err.message);
+    console.error("[Notion] Full error:", JSON.stringify(err, null, 2));
+    throw err;
+  }
+
   const existing = db.properties;
+  console.log("[Notion] Existing properties:", Object.keys(existing).join(", "));
 
   const required: Record<string, object> = {
     Name: { title: {} },
@@ -171,17 +184,44 @@ async function ensureNotionSchema(notion: Client, databaseId: string) {
   }
 
   if (Object.keys(missing).length > 0) {
-    await notion.databases.update({
-      database_id: databaseId,
-      properties: missing,
-    });
+    console.log("[Notion] Missing properties to add:", Object.keys(missing).join(", "));
+    try {
+      const updateRes = await notion.databases.update({
+        database_id: databaseId,
+        properties: missing,
+      });
+      console.log("[Notion] Database schema updated successfully");
+    } catch (err: any) {
+      console.error("[Notion] FAILED to update database schema:", err.code, err.status, err.message);
+      console.error("[Notion] Full error:", JSON.stringify(err, null, 2));
+      throw err;
+    }
+  } else {
+    console.log("[Notion] All required properties already exist");
   }
 }
 
 async function logToNotion(data: FormPayload, locationId: string) {
-  const notion = new Client({ auth: process.env.NOTION_API_KEY });
-  // Strip any view query param from the database ID
-  const databaseId = (process.env.NOTION_DATABASE_ID ?? "").split("?")[0];
+  console.log("[Notion] logToNotion called for company:", data.company_name, "locationId:", locationId);
+
+  const apiKey = process.env.NOTION_API_KEY;
+  console.log("[Notion] NOTION_API_KEY present:", !!apiKey, "length:", apiKey?.length ?? 0);
+
+  const rawDbId = process.env.NOTION_DATABASE_ID ?? "";
+  const databaseId = rawDbId.split("?")[0];
+  console.log("[Notion] Raw NOTION_DATABASE_ID:", rawDbId);
+  console.log("[Notion] Parsed databaseId:", databaseId, "length:", databaseId.length);
+
+  if (!apiKey) {
+    console.error("[Notion] NOTION_API_KEY is not set — skipping Notion logging");
+    return;
+  }
+  if (!databaseId) {
+    console.error("[Notion] NOTION_DATABASE_ID is not set — skipping Notion logging");
+    return;
+  }
+
+  const notion = new Client({ auth: apiKey });
   const contact = data.contact_info ?? {};
   const size = data.company_size ?? {};
 
@@ -195,56 +235,67 @@ async function logToNotion(data: FormPayload, locationId: string) {
   const rt = (v: string | undefined) =>
     ({ rich_text: [{ text: { content: v ?? "" } }] });
 
-  await notion.pages.create({
-    parent: { database_id: databaseId },
-    properties: {
-      // Business Info
-      Name: { title: [{ text: { content: data.company_name } }] },
-      Email: { email: contact.email || null },
-      Phone: { phone_number: contact.phone || null },
-      Industry: { select: { name: industry || "Unknown" } },
-      "Company Size": rt(
-        [size.employees && `${size.employees} employees`, size.locations && `${size.locations} locations`]
-          .filter(Boolean).join(", "),
-      ),
-      "Avg Client Value": { number: parseFloat(data.avg_client_value) || null },
-      "Contact Name": rt(contact.name),
-      "Contact Role": rt(contact.role),
-      Website: { url: data.website_url || null },
+  const properties = {
+    // Business Info
+    Name: { title: [{ text: { content: data.company_name } }] },
+    Email: { email: contact.email || null },
+    Phone: { phone_number: contact.phone || null },
+    Industry: { select: { name: industry || "Unknown" } },
+    "Company Size": rt(
+      [size.employees && `${size.employees} employees`, size.locations && `${size.locations} locations`]
+        .filter(Boolean).join(", "),
+    ),
+    "Avg Client Value": { number: parseFloat(data.avg_client_value) || null },
+    "Contact Name": rt(contact.name),
+    "Contact Role": rt(contact.role),
+    Website: { url: data.website_url || null },
 
-      // Operations
-      Timezone: { select: { name: timezone || "ET" } },
-      "Business Hours": rt(data.hours),
+    // Operations
+    Timezone: { select: { name: timezone || "ET" } },
+    "Business Hours": rt(data.hours),
 
-      // Voice Identity
-      "Voice Gender": { select: { name: data.voice_gender || "female" } },
-      "Voice Accent": rt(data.voice_accent),
+    // Voice Identity
+    "Voice Gender": { select: { name: data.voice_gender || "female" } },
+    "Voice Accent": rt(data.voice_accent),
 
-      // Call Goals
-      "Call Goal": { select: { name: callGoal || "book" } },
-      "Info Collection": rt(data.info_collection),
-      FAQs: rt(data.faqs),
+    // Call Goals
+    "Call Goal": { select: { name: callGoal || "book" } },
+    "Info Collection": rt(data.info_collection),
+    FAQs: rt(data.faqs),
 
-      // Systems & Tools
-      Calendar: { select: { name: calendar || "google" } },
-      CRM: rt(data.crm),
-      "Meeting Types": rt(data.meeting_types),
-      "Booking Rules": rt(data.booking_rules),
-      "Phone Provider": rt(data.phone_provider),
-      "Call Forwarding": rt(data.forwarding),
-      "Additional Info": rt(data.additional_info),
+    // Systems & Tools
+    Calendar: { select: { name: calendar || "google" } },
+    CRM: rt(data.crm),
+    "Meeting Types": rt(data.meeting_types),
+    "Booking Rules": rt(data.booking_rules),
+    "Phone Provider": rt(data.phone_provider),
+    "Call Forwarding": rt(data.forwarding),
+    "Additional Info": rt(data.additional_info),
 
-      // Internal
-      "GHL Location ID": rt(locationId),
-      Status: { select: { name: "Onboarding" } },
+    // Internal
+    "GHL Location ID": rt(locationId),
+    Status: { select: { name: "Onboarding" } },
 
-      // Legal / Signature
-      "Signature Name": rt(data.signature_name),
-      "Signer Title": rt(data.signer_title),
-      "Signer Email": { email: data.signer_email || null },
-      "Date Signed": { date: { start: data.date_signed || null } },
-    },
-  });
+    // Legal / Signature
+    "Signature Name": rt(data.signature_name),
+    "Signer Title": rt(data.signer_title),
+    "Signer Email": { email: data.signer_email || null },
+    "Date Signed": { date: { start: data.date_signed || null } },
+  };
+
+  console.log("[Notion] Creating page with properties:", JSON.stringify(properties, null, 2));
+
+  try {
+    const page = await notion.pages.create({
+      parent: { database_id: databaseId },
+      properties,
+    });
+    console.log("[Notion] Page created successfully! Page ID:", (page as any).id);
+  } catch (err: any) {
+    console.error("[Notion] FAILED to create page:", err.code, err.status, err.message);
+    console.error("[Notion] Full error:", JSON.stringify(err, null, 2));
+    throw err;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -318,10 +369,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     await applySnapshot(location.id);
 
     // Step 3 & 4 in parallel — neither blocks the other
-    await Promise.allSettled([
+    const [notionResult, notifyResult] = await Promise.allSettled([
       logToNotion(data, location.id),
       notifyTeam(data, location.id),
     ]);
+
+    console.log("[Handler] Notion result:", notionResult.status,
+      notionResult.status === "rejected" ? notionResult.reason : "OK");
+    console.log("[Handler] Notify result:", notifyResult.status,
+      notifyResult.status === "rejected" ? notifyResult.reason : "OK");
 
     return res.status(200).json({
       success: true,
