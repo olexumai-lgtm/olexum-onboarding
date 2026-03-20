@@ -349,7 +349,7 @@ export default function OnboardingForm() {
     try {
       // Prepare payload with flattened signature data
       const payload = { ...formData };
-      
+
       // Flatten signature data if present
       if (payload.terms_acceptance && typeof payload.terms_acceptance === 'object') {
         const signatureData = payload.terms_acceptance;
@@ -357,23 +357,27 @@ export default function OnboardingForm() {
         payload.signer_title = signatureData.signedTitle;
         payload.date_signed = signatureData.signedDate;
         payload.signer_email = signatureData.signedEmail;
-        // Keep the original object too just in case, or remove it if preferred. 
-        // Keeping it is safer for now.
+        delete payload.terms_acceptance;
       }
 
-      // Send data to Zapier Webhook
-      await fetch("https://hooks.zapier.com/hooks/catch/26101729/uq0mikp/", {
+      // Send data to onboarding API (creates GHL sub-account, applies snapshot, logs to Notion)
+      const res = await fetch("/api/onboard", {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
-        mode: "no-cors" // Zapier webhooks don't support CORS, but the request still sends
       });
-      
+
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        console.error("Onboard API error:", body);
+      }
+
       // Redirect to Setup Page (Calendar -> Stripe)
       window.location.href = "/setup";
     } catch (error) {
       console.error("Submission error:", error);
-      // Fallback redirect even if webhook fails (prioritize payment)
-      window.location.href = "https://buy.stripe.com/7sYbJ38Of9Q1gd84343wQ02";
+      // Fallback redirect even if API fails (prioritize payment flow)
+      window.location.href = "/setup";
     }
   };
 
