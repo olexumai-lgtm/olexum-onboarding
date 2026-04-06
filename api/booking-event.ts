@@ -1,9 +1,7 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { Client } from "@notionhq/client";
 
-// Stripe v22 uses CJS default export
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const Stripe = require("stripe");
+import Stripe from "stripe";
 
 const APPOINTMENT_RATE_CENTS = parseInt(
   process.env.APPOINTMENT_RATE_CENTS ?? "4000",
