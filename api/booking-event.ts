@@ -25,8 +25,32 @@ function getBookingsDbId() {
 }
 
 async function ensureBookingsColumns(apiKey: string, databaseId: string) {
+  const headers = {
+    Authorization: `Bearer ${apiKey}`,
+    "Content-Type": "application/json",
+    "Notion-Version": "2022-06-28",
+  };
+  const dbUrl = `https://api.notion.com/v1/databases/${databaseId}`;
+
+  // Rename the default "Name" title property to "Contact Name".
+  // Notion databases always have exactly one title property; we can't create a
+  // second one, so we rename the existing one instead.
+  const renameRes = await fetch(dbUrl, {
+    method: "PATCH",
+    headers,
+    body: JSON.stringify({
+      properties: { Name: { name: "Contact Name" } },
+    }),
+  });
+
+  if (!renameRes.ok) {
+    const text = await renameRes.text();
+    // 400 likely means it was already renamed — log and continue
+    console.warn("[Notion] Title rename response:", renameRes.status, text);
+  }
+
+  // Now add the remaining (non-title) properties.
   const properties: Record<string, object> = {
-    "Contact Name": { title: {} },
     "Contact Phone": { phone_number: {} },
     "Contact Email": { email: {} },
     "Contact ID": { rich_text: {} },
@@ -48,18 +72,11 @@ async function ensureBookingsColumns(apiKey: string, databaseId: string) {
     "Raw Payload": { rich_text: {} },
   };
 
-  const res = await fetch(
-    `https://api.notion.com/v1/databases/${databaseId}`,
-    {
-      method: "PATCH",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-        "Notion-Version": "2022-06-28",
-      },
-      body: JSON.stringify({ properties }),
-    },
-  );
+  const res = await fetch(dbUrl, {
+    method: "PATCH",
+    headers,
+    body: JSON.stringify({ properties }),
+  });
 
   if (!res.ok) {
     const text = await res.text();
