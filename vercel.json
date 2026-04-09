@@ -1,4 +1,10 @@
 {
+  "crons": [
+    {
+      "path": "/api/bi-weekly-billing",
+      "schedule": "59 4 * * 1"
+    }
+  ],
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api/$1" },
     { "source": "/(.*)", "destination": "/index.html" }
