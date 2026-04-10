@@ -21,9 +21,9 @@ export default function ThankYou() {
           <Check className="w-12 h-12 text-green-500" />
         </div>
 
-        <h1 className="text-4xl font-bold mb-4 tracking-tight">You're Almost Live!</h1>
+        <h1 className="text-4xl font-bold mb-4 tracking-tight">You're All Set</h1>
         <p className="text-xl text-muted-foreground mb-12">
-          Your AI agent is being built now — just one more step on your end.
+          Your MedFlow System setup begins now. We'll be in touch within 48 hours.
         </p>
 
         <div className="grid gap-6 text-left mb-12">
@@ -34,7 +34,7 @@ export default function ThankYou() {
             <div>
               <h3 className="font-bold text-white mb-1">Set Up Call Forwarding</h3>
               <p className="text-sm text-muted-foreground">
-                Check your email for call forwarding instructions — your agent can't take calls until this is done. It only takes a couple minutes. We discussed this on our call, so just follow the steps in the email and you're good to go.
+                Check your email for call forwarding instructions — your agent can't take calls until this is done. It only takes a couple minutes.
               </p>
             </div>
           </div>
@@ -46,7 +46,7 @@ export default function ThankYou() {
             <div>
               <h3 className="font-bold text-white mb-1">Then Sit Back — We Handle the Rest</h3>
               <p className="text-sm text-muted-foreground">
-                Once forwarding is confirmed, your agent goes live within 48 hours. We'll review performance and ROI together on your scheduled call.
+                Once forwarding is confirmed, your agent goes live within 48 hours.
               </p>
             </div>
           </div>

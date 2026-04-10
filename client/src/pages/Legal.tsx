@@ -56,7 +56,7 @@ export default function Legal() {
 
                 <div className="p-4 bg-white/5 rounded-lg border border-white/5">
                   <strong className="text-white block mb-1">4. Cancellation</strong>
-                  Clients may cancel their subscription at any time via the Stripe Customer Portal. Cancellations take effect at the end of the current billing period.
+                  Clients may cancel their service at any time by providing written notice. Any outstanding invoices for appointments already completed remain due.
                 </div>
               </div>
             </div>

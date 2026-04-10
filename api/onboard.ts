@@ -128,14 +128,15 @@ async function applySnapshot(locationId: string) {
 // 3. Log Client to Notion
 // ---------------------------------------------------------------------------
 async function ensureNotionColumns(apiKey: string, databaseId: string) {
+  // Both Name and Contact Name are title properties in this DB — omit them
+  // from the PATCH (title properties cannot be added or type-changed).
   const requiredProperties: Record<string, object> = {
-    Name: { title: {} },
     Email: { email: {} },
+    "Contact Email": { email: {} },
     Phone: { phone_number: {} },
     Industry: { select: { options: [] } },
     "Company Size": { rich_text: {} },
     "Avg Client Value": { number: { format: "dollar" } },
-    "Contact Name": { rich_text: {} },
     "Contact Role": { rich_text: {} },
     Website: { url: {} },
     Timezone: { select: { options: [] } },
@@ -213,9 +214,10 @@ async function logToNotion(data: FormPayload, locationId: string) {
     ({ rich_text: [{ text: { content: v ?? "" } }] });
 
   const properties = {
-    // Business Info
+    // Business Info — Name is the DB's title property
     Name: { title: [{ text: { content: data.company_name } }] },
     Email: { email: contact.email || null },
+    "Contact Email": { email: contact.email || null },
     Phone: { phone_number: contact.phone || null },
     Industry: { select: { name: industry || "Unknown" } },
     "Company Size": rt(
@@ -223,7 +225,7 @@ async function logToNotion(data: FormPayload, locationId: string) {
         .filter(Boolean).join(", "),
     ),
     "Avg Client Value": { number: parseFloat(data.avg_client_value) || null },
-    "Contact Name": rt(contact.name),
+    "Contact Name": { title: [{ text: { content: contact.name ?? "" } }] },
     "Contact Role": rt(contact.role),
     Website: { url: data.website_url || null },
 
@@ -271,6 +273,7 @@ async function logToNotion(data: FormPayload, locationId: string) {
   } catch (err: any) {
     console.error("[Notion] FAILED to create page:", err.code, err.status, err.message);
     console.error("[Notion] Full error:", JSON.stringify(err, null, 2));
+    throw err;
   }
 }
 

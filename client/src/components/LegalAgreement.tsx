@@ -83,15 +83,15 @@ export const LegalAgreement: React.FC<LegalAgreementProps> = ({
     const sections = [
       {
         title: "1. SERVICES PROVIDED",
-        content: "Olexum agrees to deliver AI Voice Agent setup, including automated call routing, dashboard access, and basic prompt configuration. Services will be provisioned within 48 hours of trial activation."
+        content: "Olexum agrees to deliver AI Voice Agent setup, including automated call routing, dashboard access, and basic prompt configuration. Services will be provisioned within 48 hours of contract signing."
       },
       {
-        title: "2. TRIAL PERIOD & SUBSCRIPTION TERMS",
-        content: "Client is granted a 16-day trial period (14 days + 48-hour setup). At the end of this trial period, this Agreement automatically converts to a month-to-month subscription at the rate of $600 USD per month. Client may cancel at any time via the Stripe dashboard before the renewal date to avoid charges."
+        title: "2. PRICING & PAYMENT TERMS",
+        content: "Services are billed on a pay-per-appointment basis. There is no upfront cost and no recurring subscription fee. Client will be invoiced bi-weekly for completed appointments handled by the AI Voice Agent. Payment is due upon receipt of each invoice."
       },
       {
         title: "3. CANCELLATION POLICY",
-        content: "This Agreement is month-to-month. Client retains full autonomy to cancel services at any time. No refunds will be issued for partial months or fees already processed once a billing cycle has commenced."
+        content: "This Agreement is ongoing with no minimum commitment. Client retains full autonomy to cancel services at any time by providing written notice. Any outstanding invoices for appointments already completed remain due."
       },
       {
         title: "4. LIMITATION OF LIABILITY",
@@ -176,18 +176,17 @@ export const LegalAgreement: React.FC<LegalAgreementProps> = ({
 
           <section>
             <h3 className="text-lg font-semibold text-foreground mt-6 mb-2">1. SERVICES PROVIDED</h3>
-            <p>Olexum agrees to deliver AI Voice Agent setup, including automated call routing, dashboard access, and basic prompt configuration. Services will be provisioned within 48 hours of trial activation.</p>
+            <p>Olexum agrees to deliver AI Voice Agent setup, including automated call routing, dashboard access, and basic prompt configuration. Services will be provisioned within 48 hours of contract signing.</p>
           </section>
 
           <section>
-            <h3 className="text-lg font-semibold text-foreground mt-6 mb-2">2. TRIAL PERIOD & SUBSCRIPTION TERMS</h3>
-            <p>Client is granted a <strong>16-day trial period</strong> (14 days + 48-hour setup). At the end of this trial period, this Agreement automatically converts to a month-to-month subscription at the rate of <strong>$600 USD per month</strong>.</p>
-            <p className="mt-2">Client may cancel at any time via the Stripe dashboard before the renewal date to avoid charges.</p>
+            <h3 className="text-lg font-semibold text-foreground mt-6 mb-2">2. PRICING & PAYMENT TERMS</h3>
+            <p>Services are billed on a <strong>pay-per-appointment</strong> basis. There is no upfront cost and no recurring subscription fee. Client will be invoiced bi-weekly for completed appointments handled by the AI Voice Agent. Payment is due upon receipt of each invoice.</p>
           </section>
 
           <section>
             <h3 className="text-lg font-semibold text-foreground mt-6 mb-2">3. CANCELLATION POLICY</h3>
-            <p>This Agreement is month-to-month. Client retains full autonomy to cancel services at any time. No refunds will be issued for partial months or fees already processed once a billing cycle has commenced.</p>
+            <p>This Agreement is ongoing with no minimum commitment. Client retains full autonomy to cancel services at any time by providing written notice. Any outstanding invoices for appointments already completed remain due.</p>
           </section>
 
           <section>

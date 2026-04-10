@@ -262,8 +262,8 @@ const QUESTIONS: Question[] = [
 
 // --- Components ---
 
-const CompletionScreen = ({ onProceed }: { onProceed: () => void }) => (
-  <motion.div 
+const CompletionScreen = ({ onProceed, isSubmitting }: { onProceed: () => void; isSubmitting: boolean }) => (
+  <motion.div
     initial={{ opacity: 0, scale: 0.9 }}
     animate={{ opacity: 1, scale: 1 }}
     className="flex flex-col items-center justify-center text-center p-8 max-w-2xl mx-auto"
@@ -273,7 +273,7 @@ const CompletionScreen = ({ onProceed }: { onProceed: () => void }) => (
     </div>
     <h2 className="text-4xl font-bold mb-4 tracking-tight">Data Collection Complete</h2>
     <p className="text-xl text-muted-foreground mb-8">
-      Your onboarding data has been securely recorded. Please proceed to the final steps to activate your 16-day trial.
+      Your onboarding data has been securely recorded. Click below to finalize your submission.
     </p>
     <div className="bg-[#1a1a1a] border border-white/10 rounded-xl p-6 w-full max-w-md mb-8">
       <div className="flex items-center justify-between mb-4">
@@ -285,7 +285,7 @@ const CompletionScreen = ({ onProceed }: { onProceed: () => void }) => (
       </div>
       <div className="space-y-3">
         <div className="h-1 w-full bg-white/5 rounded-full overflow-hidden">
-          <motion.div 
+          <motion.div
             className="h-full bg-green-500"
             initial={{ width: "0%" }}
             animate={{ width: "100%" }}
@@ -295,11 +295,12 @@ const CompletionScreen = ({ onProceed }: { onProceed: () => void }) => (
         <p className="text-xs text-muted-foreground text-left font-mono">Syncing data...</p>
       </div>
     </div>
-    <Button 
+    <Button
       className="bg-white text-black hover:bg-white/90 px-8 h-12 rounded-full font-medium text-lg"
       onClick={onProceed}
+      disabled={isSubmitting}
     >
-      Proceed to Secure Setup
+      {isSubmitting ? "Submitting..." : "Submit & Finalize"}
     </Button>
   </motion.div>
 );
@@ -341,6 +342,7 @@ export default function OnboardingForm() {
   const [currentStep, setCurrentStep] = useState(0);
   const [isComplete, setIsComplete] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isSubmitted, setIsSubmitted] = useState(false);
   const [formData, setFormData] = useState<Record<string, any>>({});
   const [direction, setDirection] = useState(0);
 
@@ -372,12 +374,12 @@ export default function OnboardingForm() {
         console.error("Onboard API error:", body);
       }
 
-      // Redirect to Setup Page (Calendar -> Stripe)
-      window.location.href = "/setup";
+      setIsSubmitted(true);
     } catch (error) {
       console.error("Submission error:", error);
-      // Fallback redirect even if API fails (prioritize payment flow)
-      window.location.href = "/setup";
+      setIsSubmitted(true);
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -537,8 +539,31 @@ export default function OnboardingForm() {
                 }}
                 className="w-full"
               >
-                {isComplete ? (
-                  <CompletionScreen onProceed={handleSubmission} />
+                {isSubmitted ? (
+                  <motion.div
+                    initial={{ opacity: 0, scale: 0.9 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    className="flex flex-col items-center justify-center text-center p-8 max-w-2xl mx-auto"
+                  >
+                    <div className="w-24 h-24 rounded-full bg-green-500/10 border border-green-500/30 flex items-center justify-center mb-8 glow-green">
+                      <Check className="w-12 h-12 text-green-500" />
+                    </div>
+                    <h2 className="text-4xl font-bold mb-4 tracking-tight">You're All Set</h2>
+                    <p className="text-xl text-muted-foreground mb-4">
+                      Your MedFlow System setup begins now.
+                    </p>
+                    <p className="text-lg text-muted-foreground mb-8">
+                      We'll be in touch within 48 hours to get everything configured and running.
+                    </p>
+                    <div className="bg-[#1a1a1a] border border-white/10 rounded-xl p-6 w-full max-w-md">
+                      <div className="flex items-center justify-center gap-2 text-green-500 font-mono text-sm">
+                        <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+                        ONBOARDING COMPLETE
+                      </div>
+                    </div>
+                  </motion.div>
+                ) : isComplete ? (
+                  <CompletionScreen onProceed={handleSubmission} isSubmitting={isSubmitting} />
                 ) : (
                   <div className="bg-[#1a1a1a] border border-white/5 rounded-2xl p-8 shadow-2xl glow-blue/5 backdrop-blur-sm">
                     <h2 className="text-3xl font-bold mb-3 tracking-tight">{currentQuestion.title}</h2>
