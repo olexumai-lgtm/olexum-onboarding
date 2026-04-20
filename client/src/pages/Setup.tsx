@@ -16,7 +16,7 @@ export default function Setup() {
 
         <h1 className="text-4xl font-bold mb-4 tracking-tight">You're All Set</h1>
         <p className="text-xl text-muted-foreground mb-4">
-          Your MedFlow System setup begins now.
+          Your SpaFlow System setup begins now.
         </p>
         <p className="text-lg text-muted-foreground">
           We'll be in touch within 48 hours to get everything configured and running.

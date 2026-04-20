@@ -1,5 +1,6 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { Client } from "@notionhq/client";
+import Stripe from "stripe";
 
 const GHL_BASE = "https://services.leadconnectorhq.com";
 const DRY_RUN = process.env.DRY_RUN === "true";
@@ -368,6 +369,65 @@ async function notifyTeam(data: FormPayload, locationId: string) {
 }
 
 // ---------------------------------------------------------------------------
+// Create Stripe Customer + persist to locations table
+// ---------------------------------------------------------------------------
+async function createStripeCustomerAndPersist(
+  data: FormPayload,
+  locationId: string,
+) {
+  const contact = data.contact_info ?? {};
+
+  if (DRY_RUN) {
+    const fakeId = `cus_dryrun_${locationId}`;
+    console.log(`[DRY_RUN] Would create Stripe customer; using ${fakeId}`);
+    const { db } = await import("../db/client.js");
+    const { locations } = await import("../db/schema.js");
+    await db
+      .insert(locations)
+      .values({
+        locationId,
+        stripeCustomerId: fakeId,
+        companyName: data.company_name,
+        billingEmail: contact.email ?? "",
+      })
+      .onConflictDoNothing();
+    return fakeId;
+  }
+
+  const key = process.env.STRIPE_SECRET_KEY;
+  if (!key) throw new Error("STRIPE_SECRET_KEY is not set");
+
+  const stripe = new Stripe(key);
+  const customer = await stripe.customers.create({
+    name: data.company_name,
+    email: contact.email,
+    phone: contact.phone,
+    metadata: {
+      location_id: locationId,
+      company_name: data.company_name,
+      contact_name: contact.name ?? "",
+    },
+  });
+
+  const { db } = await import("../db/client.js");
+  const { locations } = await import("../db/schema.js");
+  await db
+    .insert(locations)
+    .values({
+      locationId,
+      stripeCustomerId: customer.id,
+      companyName: data.company_name,
+      billingEmail: contact.email ?? "",
+    })
+    .onConflictDoNothing();
+
+  console.log(
+    `[Stripe] Customer ${customer.id} created + persisted for location ${locationId}`,
+  );
+  return customer.id;
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 function mapTimezone(tz: string): string {
@@ -415,11 +475,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     await applySnapshot(location.id);
 
     // Step 3, 4 & 5 in parallel — none block each other
-    const [notionResult, notifyResult, kbResult] = await Promise.allSettled([
-      logToNotion(data, location.id),
-      notifyTeam(data, location.id),
-      scrapeAndPushToKB(data.website_url, location.id),
-    ]);
+    const [notionResult, notifyResult, kbResult, stripeResult] =
+      await Promise.allSettled([
+        logToNotion(data, location.id),
+        notifyTeam(data, location.id),
+        scrapeAndPushToKB(data.website_url, location.id),
+        createStripeCustomerAndPersist(data, location.id),
+      ]);
 
     console.log("[Handler] Notion result:", notionResult.status,
       notionResult.status === "rejected" ? notionResult.reason : "OK");
@@ -427,6 +489,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       notifyResult.status === "rejected" ? notifyResult.reason : "OK");
     console.log("[Handler] KB result:", kbResult.status,
       kbResult.status === "rejected" ? kbResult.reason : "OK");
+    console.log(
+      "[Handler] Stripe result:",
+      stripeResult.status,
+      stripeResult.status === "rejected" ? stripeResult.reason : "OK",
+    );
 
     return res.status(200).json({
       success: true,

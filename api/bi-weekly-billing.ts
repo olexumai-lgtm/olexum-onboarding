@@ -1,42 +1,54 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import Stripe from "stripe";
 import { db } from "../db/client.js";
-import { charges } from "../db/schema.js";
-import { eq, sql } from "drizzle-orm";
+import { charges, locations, billingRuns } from "../db/schema.js";
+import { eq, sql, desc } from "drizzle-orm";
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+const MIN_DAYS_BETWEEN_RUNS = 13; // bi-weekly cadence with a 1-day buffer
+
 function getStripeClient() {
   const key = process.env.STRIPE_SECRET_KEY;
   if (!key) throw new Error("STRIPE_SECRET_KEY is not set");
   return new Stripe(key);
 }
 
-/** Returns the ISO week number for a given date. */
-function getWeekNumber(date: Date): number {
-  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
-  d.setUTCDate(d.getUTCDate() + 4 - (d.getUTCDay() || 7));
-  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
-  return Math.ceil(((d.getTime() - yearStart.getTime()) / 86400000 + 1) / 7);
-}
+export default async function handler(
+  req: VercelRequest,
+  res: VercelResponse,
+) {
+  console.log(
+    "[bi-weekly-billing] Cron triggered at",
+    new Date().toISOString(),
+  );
 
-// ---------------------------------------------------------------------------
-// Handler
-// ---------------------------------------------------------------------------
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  console.log("[bi-weekly-billing] Cron triggered at", new Date().toISOString());
+  // Manual trigger override: /api/bi-weekly-billing?force=true
+  const force = req.query.force === "true";
 
-  // Week-number gate: only run on even weeks
-  const now = new Date();
-  const weekNumber = getWeekNumber(now);
-  if (weekNumber % 2 !== 0) {
-    console.log(`[bi-weekly-billing] Odd week (${weekNumber}), skipping.`);
-    return res.status(200).json({ ok: true, skipped: true, reason: `odd week ${weekNumber}` });
+  // Cadence guard: skip if last run was < 13 days ago
+  if (!force) {
+    const lastRun = await db
+      .select()
+      .from(billingRuns)
+      .orderBy(desc(billingRuns.ranAt))
+      .limit(1);
+
+    if (lastRun.length > 0) {
+      const daysSince =
+        (Date.now() - lastRun[0].ranAt.getTime()) / (1000 * 60 * 60 * 24);
+      if (daysSince < MIN_DAYS_BETWEEN_RUNS) {
+        console.log(
+          `[bi-weekly-billing] Last run was ${daysSince.toFixed(1)}d ago; skipping.`,
+        );
+        return res.status(200).json({
+          ok: true,
+          skipped: true,
+          daysSinceLastRun: daysSince,
+        });
+      }
+    }
   }
 
   try {
-    // 1. Query all tallied charges
     const tallied = await db
       .select()
       .from(charges)
@@ -45,82 +57,122 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     console.log(`[bi-weekly-billing] Found ${tallied.length} tallied charges`);
 
     if (tallied.length === 0) {
-      return res.status(200).json({ ok: true, invoices: 0, message: "No tallied charges" });
+      await db.insert(billingRuns).values({
+        invoiceCount: 0,
+        totalCents: 0,
+        chargesProcessed: 0,
+      });
+      return res
+        .status(200)
+        .json({ ok: true, invoices: 0, message: "No tallied charges" });
     }
 
-    // 2. Group by location_id
     const byLocation = new Map<string, typeof tallied>();
     for (const charge of tallied) {
-      if (!byLocation.has(charge.locationId)) byLocation.set(charge.locationId, []);
+      if (!byLocation.has(charge.locationId))
+        byLocation.set(charge.locationId, []);
       byLocation.get(charge.locationId)!.push(charge);
     }
 
-    // 3. Invoice each location via Stripe
     const stripe = getStripeClient();
     let invoiceCount = 0;
     let totalAmountCents = 0;
 
     for (const [locationId, locationCharges] of byLocation) {
       try {
-        // Find Stripe customer by location_id metadata
-        const existing = await stripe.customers.search({
-          query: `metadata["location_id"]:"${locationId}"`,
-        });
+        // Look up Stripe customer via locations table (not customers.search)
+        const loc = await db
+          .select()
+          .from(locations)
+          .where(eq(locations.locationId, locationId))
+          .limit(1);
 
-        if (existing.data.length === 0) {
-          console.warn(`[bi-weekly-billing] No Stripe customer for location ${locationId}, skipping`);
+        if (loc.length === 0) {
+          console.warn(
+            `[bi-weekly-billing] No locations record for ${locationId}; skipping.`,
+          );
           continue;
         }
 
-        const customerId = existing.data[0].id;
+        const customerId = loc[0].stripeCustomerId;
         const chargeCount = locationCharges.length;
-        const amountCents = locationCharges.reduce((sum, c) => sum + c.amountCents, 0);
+        const amountCents = locationCharges.reduce(
+          (sum, c) => sum + c.amountCents,
+          0,
+        );
 
-        // Create a single invoice item for the total
+        // Decide: first invoice (capture PM) or subsequent (auto-charge)
+        const customer = await stripe.customers.retrieve(customerId);
+        const hasDefaultPM =
+          !customer.deleted &&
+          !!customer.invoice_settings?.default_payment_method;
+
         await stripe.invoiceItems.create({
           customer: customerId,
           amount: amountCents,
           currency: "usd",
-          description: `SpaFlow Revenue Engine - Booked Appointments (${chargeCount} appointments)`,
+          description: `SpaFlow — ${chargeCount} booked appointment${chargeCount === 1 ? "" : "s"}`,
         });
 
-        // Create, finalize, and send the invoice — Net 2 (48-hour shutoff)
-        const invoice = await stripe.invoices.create({
-          customer: customerId,
-          collection_method: "send_invoice",
-          days_until_due: 2,
-          auto_advance: true,
-        });
+        let invoice: Stripe.Invoice;
+        if (hasDefaultPM) {
+          // Subsequent invoice: auto-charge
+          invoice = await stripe.invoices.create({
+            customer: customerId,
+            collection_method: "charge_automatically",
+            auto_advance: true,
+            metadata: { location_id: locationId },
+          });
+        } else {
+          // First invoice: emailed, save PM on payment
+          invoice = await stripe.invoices.create({
+            customer: customerId,
+            collection_method: "send_invoice",
+            days_until_due: 2,
+            auto_advance: true,
+            metadata: { location_id: locationId, is_first_invoice: "true" },
+            payment_settings: {
+              save_default_payment_method: "on_success",
+            } as any,
+          });
+        }
 
-        const finalized = await stripe.invoices.finalizeInvoice(invoice.id);
-        await stripe.invoices.sendInvoice(finalized.id);
+        const finalized = await stripe.invoices.finalizeInvoice(invoice.id!);
+        if (!hasDefaultPM) {
+          await stripe.invoices.sendInvoice(finalized.id!);
+        }
 
         totalAmountCents += amountCents;
         invoiceCount++;
 
         console.log(
-          `[bi-weekly-billing] Invoice sent for location ${locationId}: ` +
-          `${finalized.id} — $${(amountCents / 100).toFixed(2)} (${chargeCount} appointments)`,
+          `[bi-weekly-billing] ${hasDefaultPM ? "Auto-charged" : "Sent"} invoice ${finalized.id} ` +
+            `for location ${locationId}: $${(amountCents / 100).toFixed(2)} (${chargeCount} appts)`,
         );
 
-        // 4. Mark these charges as invoiced
+        // Mark charges invoiced only after successful finalization
         const chargeIds = locationCharges.map((c) => c.id);
         await db
           .update(charges)
           .set({ status: "invoiced" })
           .where(sql`${charges.id} = ANY(${chargeIds})`);
-
-        console.log(`[bi-weekly-billing] Marked ${chargeIds.length} charges as invoiced for location ${locationId}`);
       } catch (err: any) {
-        console.error(`[bi-weekly-billing] Error processing location ${locationId}:`, err.message);
-        // Do NOT update DB status — charges remain tallied for next run
+        console.error(
+          `[bi-weekly-billing] Failed for location ${locationId}:`,
+          err.message,
+        );
+        // Do NOT mark charges invoiced — they'll retry next run
       }
     }
 
-    // 5. Summary
+    await db.insert(billingRuns).values({
+      invoiceCount,
+      totalCents: totalAmountCents,
+      chargesProcessed: tallied.length,
+    });
+
     const summary = {
       ok: true,
-      week: weekNumber,
       invoices: invoiceCount,
       totalAmount: `$${(totalAmountCents / 100).toFixed(2)}`,
       chargesProcessed: tallied.length,
@@ -128,7 +180,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     console.log("[bi-weekly-billing] Complete:", JSON.stringify(summary));
     return res.status(200).json(summary);
   } catch (err: any) {
-    console.error("[bi-weekly-billing] Fatal error:", err.message, err.stack);
+    console.error("[bi-weekly-billing] Fatal:", err.message, err.stack);
     return res.status(500).json({ ok: false, error: err.message });
   }
 }

@@ -53,14 +53,8 @@ const QUESTIONS: Question[] = [
     description: "Which industry do you operate in?",
     type: "select",
     options: [
-      { label: "Med Spa / Aesthetics", value: "medspa" },
-      { label: "Dental Practice", value: "dental" },
-      { label: "HVAC / Plumbing", value: "hvac" },
-      { label: "Real Estate", value: "real_estate" },
-      { label: "Law Firm", value: "legal" },
-      { label: "Chiropractic", value: "chiro" },
-      { label: "Solar", value: "solar" },
-      { label: "Other", value: "other", hasOtherInput: true }
+      { label: "Day Spa", value: "dayspa" },
+      { label: "Other (not day spa — please specify)", value: "other", hasOtherInput: true }
     ]
   },
   {
@@ -550,7 +544,7 @@ export default function OnboardingForm() {
                     </div>
                     <h2 className="text-4xl font-bold mb-4 tracking-tight">You're All Set</h2>
                     <p className="text-xl text-muted-foreground mb-4">
-                      Your MedFlow System setup begins now.
+                      Your SpaFlow System setup begins now.
                     </p>
                     <p className="text-lg text-muted-foreground mb-8">
                       We'll be in touch within 48 hours to get everything configured and running.

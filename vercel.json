@@ -1,4 +1,6 @@
 {
+  "outputDirectory": "dist/public",
+  "buildCommand": "vite build",
   "crons": [
     {
       "path": "/api/bi-weekly-billing",

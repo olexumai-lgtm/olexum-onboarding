@@ -23,7 +23,7 @@ export default function ThankYou() {
 
         <h1 className="text-4xl font-bold mb-4 tracking-tight">You're All Set</h1>
         <p className="text-xl text-muted-foreground mb-12">
-          Your MedFlow System setup begins now. We'll be in touch within 48 hours.
+          Your SpaFlow System setup begins now. We'll be in touch within 48 hours.
         </p>
 
         <div className="grid gap-6 text-left mb-12">
