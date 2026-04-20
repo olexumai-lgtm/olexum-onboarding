@@ -278,7 +278,74 @@ async function logToNotion(data: FormPayload, locationId: string) {
 }
 
 // ---------------------------------------------------------------------------
-// 4. Send team notification (webhook)
+// 4. Scrape website & push to GHL AI Knowledge Base
+// ---------------------------------------------------------------------------
+async function scrapeAndPushToKB(url: string, locationId: string) {
+  if (!url) {
+    console.log("[KB] No website_url provided, skipping KB setup");
+    return;
+  }
+
+  const firecrawlKey = process.env.FIRECRAWL_API_KEY;
+  if (!firecrawlKey) {
+    console.warn("[KB] FIRECRAWL_API_KEY is not set, skipping KB setup");
+    return;
+  }
+
+  // Scrape via Firecrawl — 30s timeout to stay within serverless limits
+  const scrapeRes = await fetch("https://api.firecrawl.dev/v1/scrape", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${firecrawlKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ url, formats: ["markdown"] }),
+    signal: AbortSignal.timeout(30_000),
+  });
+
+  if (!scrapeRes.ok) {
+    const text = await scrapeRes.text();
+    throw new Error(`Firecrawl scrape failed (${scrapeRes.status}): ${text}`);
+  }
+
+  const scrapeData = await scrapeRes.json();
+  const markdown: string = scrapeData.data?.markdown ?? "";
+
+  if (!markdown) {
+    console.warn("[KB] Firecrawl returned empty markdown for", url);
+    return;
+  }
+
+  console.log(`[KB] Scraped ${url}: ${markdown.length} chars of markdown`);
+
+  // Push to GHL Knowledge Base
+  const ghlRes = await fetch(
+    `${GHL_BASE}/locations/${locationId}/documents`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${process.env.GHL_API_KEY}`,
+        "Content-Type": "application/json",
+        Version: "2021-07-28",
+      },
+      body: JSON.stringify({
+        name: `Website - ${url}`,
+        type: "text",
+        content: markdown,
+      }),
+    },
+  );
+
+  if (!ghlRes.ok) {
+    const text = await ghlRes.text();
+    throw new Error(`GHL KB push failed (${ghlRes.status}): ${text}`);
+  }
+
+  console.log(`[KB] Knowledge base document created for location ${locationId}`);
+}
+
+// ---------------------------------------------------------------------------
+// 5. Send team notification (webhook)
 // ---------------------------------------------------------------------------
 async function notifyTeam(data: FormPayload, locationId: string) {
   const webhookUrl = process.env.TEAM_NOTIFICATION_WEBHOOK;
@@ -347,16 +414,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // Step 2: Apply snapshot template
     await applySnapshot(location.id);
 
-    // Step 3 & 4 in parallel — neither blocks the other
-    const [notionResult, notifyResult] = await Promise.allSettled([
+    // Step 3, 4 & 5 in parallel — none block each other
+    const [notionResult, notifyResult, kbResult] = await Promise.allSettled([
       logToNotion(data, location.id),
       notifyTeam(data, location.id),
+      scrapeAndPushToKB(data.website_url, location.id),
     ]);
 
     console.log("[Handler] Notion result:", notionResult.status,
       notionResult.status === "rejected" ? notionResult.reason : "OK");
     console.log("[Handler] Notify result:", notifyResult.status,
       notifyResult.status === "rejected" ? notifyResult.reason : "OK");
+    console.log("[Handler] KB result:", kbResult.status,
+      kbResult.status === "rejected" ? kbResult.reason : "OK");
 
     return res.status(200).json({
       success: true,

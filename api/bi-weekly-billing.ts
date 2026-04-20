@@ -1,30 +1,16 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import Stripe from "stripe";
+import { db } from "../db/client.js";
+import { charges } from "../db/schema.js";
+import { eq, sql } from "drizzle-orm";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-function getStripeClient(): any {
+function getStripeClient() {
   const key = process.env.STRIPE_SECRET_KEY;
   if (!key) throw new Error("STRIPE_SECRET_KEY is not set");
   return new Stripe(key);
-}
-
-function getBookingsDbId() {
-  const raw = process.env.NOTION_BOOKINGS_DB ?? "";
-  const id = raw.split("?")[0];
-  if (!id) throw new Error("NOTION_BOOKINGS_DB is not set");
-  return id;
-}
-
-function notionHeaders() {
-  const apiKey = process.env.NOTION_API_KEY;
-  if (!apiKey) throw new Error("NOTION_API_KEY is not set");
-  return {
-    Authorization: `Bearer ${apiKey}`,
-    "Content-Type": "application/json",
-    "Notion-Version": "2022-06-28",
-  };
 }
 
 /** Returns the ISO week number for a given date. */
@@ -36,107 +22,12 @@ function getWeekNumber(date: Date): number {
 }
 
 // ---------------------------------------------------------------------------
-// Notion: ensure Billed columns exist
-// ---------------------------------------------------------------------------
-async function ensureBilledColumns(databaseId: string) {
-  const res = await fetch(`https://api.notion.com/v1/databases/${databaseId}`, {
-    method: "PATCH",
-    headers: notionHeaders(),
-    body: JSON.stringify({
-      properties: {
-        Billed: { checkbox: {} },
-        "Billed Date": { date: {} },
-      },
-    }),
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    console.warn("[bi-weekly-billing] Column ensure response:", res.status, text);
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Notion: query unbilled billable rows
-// ---------------------------------------------------------------------------
-interface NotionPage {
-  id: string;
-  properties: Record<string, any>;
-}
-
-async function queryUnbilledRows(databaseId: string): Promise<NotionPage[]> {
-  const allPages: NotionPage[] = [];
-  let startCursor: string | undefined;
-
-  do {
-    const body: Record<string, any> = {
-      filter: {
-        and: [
-          { property: "Billable", checkbox: { equals: true } },
-          { property: "Billed", checkbox: { equals: false } },
-        ],
-      },
-      page_size: 100,
-    };
-    if (startCursor) body.start_cursor = startCursor;
-
-    const res = await fetch(
-      `https://api.notion.com/v1/databases/${databaseId}/query`,
-      { method: "POST", headers: notionHeaders(), body: JSON.stringify(body) },
-    );
-
-    if (!res.ok) {
-      const text = await res.text();
-      console.error("[bi-weekly-billing] Notion query failed:", res.status, text);
-      break;
-    }
-
-    const data = await res.json();
-    allPages.push(...data.results);
-    startCursor = data.has_more ? data.next_cursor : undefined;
-  } while (startCursor);
-
-  return allPages;
-}
-
-// ---------------------------------------------------------------------------
-// Notion: mark rows as billed
-// ---------------------------------------------------------------------------
-async function markRowBilled(pageId: string) {
-  const res = await fetch(`https://api.notion.com/v1/pages/${pageId}`, {
-    method: "PATCH",
-    headers: notionHeaders(),
-    body: JSON.stringify({
-      properties: {
-        Billed: { checkbox: true },
-        "Billed Date": { date: { start: new Date().toISOString() } },
-      },
-    }),
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    console.error("[bi-weekly-billing] Failed to mark page billed:", pageId, res.status, text);
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Extract Location ID from Notion page properties
-// ---------------------------------------------------------------------------
-function getLocationId(page: NotionPage): string {
-  const prop = page.properties["Location ID"];
-  return prop?.rich_text?.[0]?.plain_text ?? "";
-}
-
-// ---------------------------------------------------------------------------
 // Handler
 // ---------------------------------------------------------------------------
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   console.log("[bi-weekly-billing] Cron triggered at", new Date().toISOString());
 
-  // -------------------------------------------------------------------------
   // Week-number gate: only run on even weeks
-  // -------------------------------------------------------------------------
   const now = new Date();
   const weekNumber = getWeekNumber(now);
   if (weekNumber % 2 !== 0) {
@@ -145,43 +36,33 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
-    const databaseId = getBookingsDbId();
-    await ensureBilledColumns(databaseId);
+    // 1. Query all tallied charges
+    const tallied = await db
+      .select()
+      .from(charges)
+      .where(eq(charges.status, "tallied"));
 
-    // -----------------------------------------------------------------------
-    // 1. Query Notion for unbilled billable rows
-    // -----------------------------------------------------------------------
-    const rows = await queryUnbilledRows(databaseId);
-    console.log(`[bi-weekly-billing] Found ${rows.length} unbilled billable rows`);
+    console.log(`[bi-weekly-billing] Found ${tallied.length} tallied charges`);
 
-    if (rows.length === 0) {
-      return res.status(200).json({ ok: true, invoices: 0, message: "No unbilled rows" });
+    if (tallied.length === 0) {
+      return res.status(200).json({ ok: true, invoices: 0, message: "No tallied charges" });
     }
 
-    // -----------------------------------------------------------------------
-    // 2. Group rows by Location ID
-    // -----------------------------------------------------------------------
-    const byLocation = new Map<string, NotionPage[]>();
-    for (const row of rows) {
-      const locId = getLocationId(row);
-      if (!locId) {
-        console.warn("[bi-weekly-billing] Row missing Location ID, skipping:", row.id);
-        continue;
-      }
-      if (!byLocation.has(locId)) byLocation.set(locId, []);
-      byLocation.get(locId)!.push(row);
+    // 2. Group by location_id
+    const byLocation = new Map<string, typeof tallied>();
+    for (const charge of tallied) {
+      if (!byLocation.has(charge.locationId)) byLocation.set(charge.locationId, []);
+      byLocation.get(charge.locationId)!.push(charge);
     }
 
-    // -----------------------------------------------------------------------
-    // 3. For each location, create a Stripe invoice from pending items
-    // -----------------------------------------------------------------------
+    // 3. Invoice each location via Stripe
     const stripe = getStripeClient();
     let invoiceCount = 0;
     let totalAmountCents = 0;
 
-    for (const [locationId, pages] of byLocation) {
+    for (const [locationId, locationCharges] of byLocation) {
       try {
-        // Find Stripe customer for this location
+        // Find Stripe customer by location_id metadata
         const existing = await stripe.customers.search({
           query: `metadata["location_id"]:"${locationId}"`,
         });
@@ -192,46 +73,57 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         }
 
         const customerId = existing.data[0].id;
+        const chargeCount = locationCharges.length;
+        const amountCents = locationCharges.reduce((sum, c) => sum + c.amountCents, 0);
 
-        // Create an invoice from the pending invoice items
+        // Create a single invoice item for the total
+        await stripe.invoiceItems.create({
+          customer: customerId,
+          amount: amountCents,
+          currency: "usd",
+          description: `SpaFlow Revenue Engine - Booked Appointments (${chargeCount} appointments)`,
+        });
+
+        // Create, finalize, and send the invoice — Net 2 (48-hour shutoff)
         const invoice = await stripe.invoices.create({
           customer: customerId,
           collection_method: "send_invoice",
-          days_until_due: 3,
+          days_until_due: 2,
           auto_advance: true,
         });
 
-        // Finalize and send the invoice
         const finalized = await stripe.invoices.finalizeInvoice(invoice.id);
         await stripe.invoices.sendInvoice(finalized.id);
 
-        const amountDue = finalized.amount_due ?? 0;
-        totalAmountCents += amountDue;
+        totalAmountCents += amountCents;
         invoiceCount++;
 
         console.log(
           `[bi-weekly-billing] Invoice sent for location ${locationId}: ` +
-          `${finalized.id} — $${(amountDue / 100).toFixed(2)} (${pages.length} bookings)`,
+          `${finalized.id} — $${(amountCents / 100).toFixed(2)} (${chargeCount} appointments)`,
         );
 
-        // Mark all Notion rows for this location as billed
-        for (const page of pages) {
-          await markRowBilled(page.id);
-        }
+        // 4. Mark these charges as invoiced
+        const chargeIds = locationCharges.map((c) => c.id);
+        await db
+          .update(charges)
+          .set({ status: "invoiced" })
+          .where(sql`${charges.id} = ANY(${chargeIds})`);
+
+        console.log(`[bi-weekly-billing] Marked ${chargeIds.length} charges as invoiced for location ${locationId}`);
       } catch (err: any) {
         console.error(`[bi-weekly-billing] Error processing location ${locationId}:`, err.message);
+        // Do NOT update DB status — charges remain tallied for next run
       }
     }
 
-    // -----------------------------------------------------------------------
-    // 4. Summary
-    // -----------------------------------------------------------------------
+    // 5. Summary
     const summary = {
       ok: true,
       week: weekNumber,
       invoices: invoiceCount,
       totalAmount: `$${(totalAmountCents / 100).toFixed(2)}`,
-      rowsProcessed: rows.length,
+      chargesProcessed: tallied.length,
     };
     console.log("[bi-weekly-billing] Complete:", JSON.stringify(summary));
     return res.status(200).json(summary);
