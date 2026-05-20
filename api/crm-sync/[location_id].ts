@@ -1,10 +1,9 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { db } from "../../db/client.js";
-import { webhookIdempotency, charges } from "../../db/schema.js";
+import { webhookIdempotency } from "../../db/schema.js";
 import { eq } from "drizzle-orm";
 
 const GHL_API_BASE = "https://services.leadconnectorhq.com";
-const BILLING_EVENTS = new Set(["completed", "no_show", "no-show", "noshow"]);
 
 interface ParsedPayload {
   phone: string;
@@ -99,11 +98,13 @@ async function upsertContact(
   return createData.contact.id;
 }
 
-async function updateContactCustomFields(
+async function upsertExternalAppointmentIdToGHL(
   contactId: string,
   appointmentTime: string,
   externalAppointmentId: string,
 ): Promise<void> {
+  // Writes external_appointment_id + next_appointment_time as custom fields on the GHL contact.
+  // The downstream GHL workflow reads external_appointment_id from here when firing /api/billing-event.
   const res = await fetch(`${GHL_API_BASE}/contacts/${contactId}`, {
     method: "PUT",
     headers: ghlHeaders(),
@@ -183,7 +184,8 @@ export default async function handler(
       .json({ error: `Unknown event_type: ${parsed.eventType}` });
   }
 
-  const idempotencyKey = `${locationId}:${parsed.externalAppointmentId}:${parsed.eventType}`;
+  // Idempotency key namespaced to crm-sync so it can't collide with billing-event's keys.
+  const idempotencyKey = `crm:${locationId}:${parsed.externalAppointmentId}:${parsed.eventType}`;
   const existing = await db
     .select({ idempotencyKey: webhookIdempotency.idempotencyKey })
     .from(webhookIdempotency)
@@ -195,12 +197,11 @@ export default async function handler(
     return res.status(200).json({ ok: true, duplicate: true });
   }
 
-  let contactId: string;
   try {
-    contactId = await upsertContact(locationId, parsed.phone);
+    const contactId = await upsertContact(locationId, parsed.phone);
     console.log(`[crm-sync] Contact upserted: ${contactId}`);
 
-    await updateContactCustomFields(
+    await upsertExternalAppointmentIdToGHL(
       contactId,
       parsed.appointmentTime,
       parsed.externalAppointmentId,
@@ -214,33 +215,10 @@ export default async function handler(
       `[crm-sync] GHL sync failed for key=${idempotencyKey}:`,
       err.message,
     );
+    // Do NOT record idempotency key on failure — the CRM should retry.
     return res
       .status(500)
       .json({ error: "GHL sync failed", detail: err.message });
-  }
-
-  // Charge insert for billable events (idempotent via unique index)
-  if (BILLING_EVENTS.has(parsed.eventType)) {
-    try {
-      await db
-        .insert(charges)
-        .values({
-          contactId,
-          externalAppointmentId: parsed.externalAppointmentId,
-          locationId,
-          appointmentTimestamp: parsed.appointmentTime
-            ? new Date(parsed.appointmentTime)
-            : new Date(),
-          amountCents: 2000,
-          status: "tallied",
-        })
-        .onConflictDoNothing();
-      console.log(
-        `[crm-sync] Charge tallied for appt ${parsed.externalAppointmentId}`,
-      );
-    } catch (err: any) {
-      console.error(`[crm-sync] Charge insert error:`, err.message);
-    }
   }
 
   await db.insert(webhookIdempotency).values({ idempotencyKey });

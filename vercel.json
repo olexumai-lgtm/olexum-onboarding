@@ -3,8 +3,8 @@
   "buildCommand": "vite build",
   "crons": [
     {
-      "path": "/api/bi-weekly-billing",
-      "schedule": "59 4 * * 1"
+      "path": "/api/monthly-billing",
+      "schedule": "0 5 1 * *"
     }
   ],
   "rewrites": [

@@ -18,7 +18,9 @@ export const charges = pgTable(
     appointmentTimestamp: timestamp("appointment_timestamp", {
       withTimezone: true,
     }).notNull(),
-    amountCents: integer("amount_cents").notNull().default(2000),
+    // Snapshot of the location's priceCents at the moment the charge was tallied.
+    // Defending against retroactive price changes affecting already-recorded charges.
+    amountCents: integer("amount_cents").notNull(),
     status: text("status").notNull().default("tallied"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
@@ -44,6 +46,12 @@ export const locations = pgTable("locations", {
   stripeCustomerId: text("stripe_customer_id").notNull(),
   companyName: text("company_name").notNull(),
   billingEmail: text("billing_email").notNull(),
+  // Per-location price-per-booking, in cents. Default $20.
+  priceCents: integer("price_cents").notNull().default(2000),
+  // 30 days after onboarding. The monthly cron skips this location if now() < trustPeriodEndsAt.
+  trustPeriodEndsAt: timestamp("trust_period_ends_at", {
+    withTimezone: true,
+  }).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true })
     .defaultNow()
     .notNull(),
@@ -55,4 +63,7 @@ export const billingRuns = pgTable("billing_runs", {
   invoiceCount: integer("invoice_count").notNull().default(0),
   totalCents: integer("total_cents").notNull().default(0),
   chargesProcessed: integer("charges_processed").notNull().default(0),
+  locationsSkippedTrustPeriod: integer("locations_skipped_trust_period")
+    .notNull()
+    .default(0),
 });

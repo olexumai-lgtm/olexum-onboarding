@@ -370,16 +370,34 @@ async function notifyTeam(data: FormPayload, locationId: string) {
 
 // ---------------------------------------------------------------------------
 // Create Stripe Customer + persist to locations table
+// Captures: stripeCustomerId, companyName, billingEmail, priceCents, trustPeriodEndsAt
 // ---------------------------------------------------------------------------
+const DEFAULT_PRICE_CENTS = 2000;
+const TRUST_PERIOD_DAYS = 30;
+
 async function createStripeCustomerAndPersist(
   data: FormPayload,
   locationId: string,
 ) {
   const contact = data.contact_info ?? {};
 
+  // Per-location pricing: accept from payload, fall back to default.
+  // Sanitize: must be a positive integer between 100 and 100000 cents ($1–$1000).
+  const rawPrice = (data as any).price_cents;
+  const priceCents =
+    Number.isInteger(rawPrice) && rawPrice >= 100 && rawPrice <= 100_000
+      ? rawPrice
+      : DEFAULT_PRICE_CENTS;
+
+  const trustPeriodEndsAt = new Date(
+    Date.now() + TRUST_PERIOD_DAYS * 24 * 60 * 60 * 1000,
+  );
+
   if (DRY_RUN) {
     const fakeId = `cus_dryrun_${locationId}`;
-    console.log(`[DRY_RUN] Would create Stripe customer; using ${fakeId}`);
+    console.log(
+      `[DRY_RUN] Would create Stripe customer; using ${fakeId} (price=${priceCents}c, trustEnds=${trustPeriodEndsAt.toISOString()})`,
+    );
     const { db } = await import("../db/client.js");
     const { locations } = await import("../db/schema.js");
     await db
@@ -389,6 +407,8 @@ async function createStripeCustomerAndPersist(
         stripeCustomerId: fakeId,
         companyName: data.company_name,
         billingEmail: contact.email ?? "",
+        priceCents,
+        trustPeriodEndsAt,
       })
       .onConflictDoNothing();
     return fakeId;
@@ -406,6 +426,7 @@ async function createStripeCustomerAndPersist(
       location_id: locationId,
       company_name: data.company_name,
       contact_name: contact.name ?? "",
+      price_cents: String(priceCents),
     },
   });
 
@@ -418,11 +439,14 @@ async function createStripeCustomerAndPersist(
       stripeCustomerId: customer.id,
       companyName: data.company_name,
       billingEmail: contact.email ?? "",
+      priceCents,
+      trustPeriodEndsAt,
     })
     .onConflictDoNothing();
 
   console.log(
-    `[Stripe] Customer ${customer.id} created + persisted for location ${locationId}`,
+    `[Stripe] Customer ${customer.id} created + persisted for location ${locationId} ` +
+      `(price=${priceCents}c, trustEnds=${trustPeriodEndsAt.toISOString()})`,
   );
   return customer.id;
 }

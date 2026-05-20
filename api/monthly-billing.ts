@@ -4,7 +4,12 @@ import { db } from "../db/client.js";
 import { charges, locations, billingRuns } from "../db/schema.js";
 import { eq, sql, desc } from "drizzle-orm";
 
-const MIN_DAYS_BETWEEN_RUNS = 13; // bi-weekly cadence with a 1-day buffer
+// Cadence safety net: monthly cron should never fire more than once every 25 days.
+// Protects against accidental re-trigger via ?force=true within the same window.
+const MIN_DAYS_BETWEEN_RUNS = 25;
+
+// How long the spa owner has to pay each emailed invoice.
+const DAYS_UNTIL_DUE = 7;
 
 function getStripeClient() {
   const key = process.env.STRIPE_SECRET_KEY;
@@ -17,14 +22,14 @@ export default async function handler(
   res: VercelResponse,
 ) {
   console.log(
-    "[bi-weekly-billing] Cron triggered at",
+    "[monthly-billing] Cron triggered at",
     new Date().toISOString(),
   );
 
-  // Manual trigger override: /api/bi-weekly-billing?force=true
+  // Manual trigger override for testing: /api/monthly-billing?force=true
   const force = req.query.force === "true";
 
-  // Cadence guard: skip if last run was < 13 days ago
+  // Cadence guard: skip if last run was < 25 days ago
   if (!force) {
     const lastRun = await db
       .select()
@@ -37,7 +42,7 @@ export default async function handler(
         (Date.now() - lastRun[0].ranAt.getTime()) / (1000 * 60 * 60 * 24);
       if (daysSince < MIN_DAYS_BETWEEN_RUNS) {
         console.log(
-          `[bi-weekly-billing] Last run was ${daysSince.toFixed(1)}d ago; skipping.`,
+          `[monthly-billing] Last run was ${daysSince.toFixed(1)}d ago; skipping.`,
         );
         return res.status(200).json({
           ok: true,
@@ -54,19 +59,21 @@ export default async function handler(
       .from(charges)
       .where(eq(charges.status, "tallied"));
 
-    console.log(`[bi-weekly-billing] Found ${tallied.length} tallied charges`);
+    console.log(`[monthly-billing] Found ${tallied.length} tallied charges`);
 
     if (tallied.length === 0) {
       await db.insert(billingRuns).values({
         invoiceCount: 0,
         totalCents: 0,
         chargesProcessed: 0,
+        locationsSkippedTrustPeriod: 0,
       });
       return res
         .status(200)
         .json({ ok: true, invoices: 0, message: "No tallied charges" });
     }
 
+    // Group charges by location
     const byLocation = new Map<string, typeof tallied>();
     for (const charge of tallied) {
       if (!byLocation.has(charge.locationId))
@@ -75,12 +82,14 @@ export default async function handler(
     }
 
     const stripe = getStripeClient();
+    const now = new Date();
     let invoiceCount = 0;
     let totalAmountCents = 0;
+    let locationsSkippedTrustPeriod = 0;
 
     for (const [locationId, locationCharges] of byLocation) {
       try {
-        // Look up Stripe customer via locations table (not customers.search)
+        // Look up location: Stripe customer + trust period state
         const loc = await db
           .select()
           .from(locations)
@@ -89,24 +98,38 @@ export default async function handler(
 
         if (loc.length === 0) {
           console.warn(
-            `[bi-weekly-billing] No locations record for ${locationId}; skipping.`,
+            `[monthly-billing] No locations record for ${locationId}; skipping.`,
           );
           continue;
         }
 
-        const customerId = loc[0].stripeCustomerId;
+        const locationRow = loc[0];
+
+        // 30-day trust period gate.
+        // Skip this location entirely if its trust period hasn't ended yet.
+        // Charges remain `tallied` and will be picked up on the next monthly run after the trust period elapses.
+        if (locationRow.trustPeriodEndsAt > now) {
+          const daysRemaining =
+            (locationRow.trustPeriodEndsAt.getTime() - now.getTime()) /
+            (1000 * 60 * 60 * 24);
+          console.log(
+            `[monthly-billing] Location ${locationId} still in trust period ` +
+              `(${daysRemaining.toFixed(1)}d remaining, ends ${locationRow.trustPeriodEndsAt.toISOString()}). ` +
+              `Skipping; ${locationCharges.length} charges remain tallied.`,
+          );
+          locationsSkippedTrustPeriod++;
+          continue;
+        }
+
+        const customerId = locationRow.stripeCustomerId;
         const chargeCount = locationCharges.length;
         const amountCents = locationCharges.reduce(
           (sum, c) => sum + c.amountCents,
           0,
         );
 
-        // Decide: first invoice (capture PM) or subsequent (auto-charge)
-        const customer = await stripe.customers.retrieve(customerId);
-        const hasDefaultPM =
-          !customer.deleted &&
-          !!customer.invoice_settings?.default_payment_method;
-
+        // One invoice item per location, summing all tallied charges.
+        // Individual price-per-booking is already baked into each charge's amountCents.
         await stripe.invoiceItems.create({
           customer: customerId,
           amount: amountCents,
@@ -114,43 +137,30 @@ export default async function handler(
           description: `SpaFlow — ${chargeCount} booked appointment${chargeCount === 1 ? "" : "s"}`,
         });
 
-        let invoice: Stripe.Invoice;
-        if (hasDefaultPM) {
-          // Subsequent invoice: auto-charge
-          invoice = await stripe.invoices.create({
-            customer: customerId,
-            collection_method: "charge_automatically",
-            auto_advance: true,
-            metadata: { location_id: locationId },
-          });
-        } else {
-          // First invoice: emailed, save PM on payment
-          invoice = await stripe.invoices.create({
-            customer: customerId,
-            collection_method: "send_invoice",
-            days_until_due: 2,
-            auto_advance: true,
-            metadata: { location_id: locationId, is_first_invoice: "true" },
-            payment_settings: {
-              save_default_payment_method: "on_success",
-            } as any,
-          });
-        }
+        // INVOICE ONLY. No auto-charge, ever. Every invoice is emailed and paid manually.
+        const invoice = await stripe.invoices.create({
+          customer: customerId,
+          collection_method: "send_invoice",
+          days_until_due: DAYS_UNTIL_DUE,
+          auto_advance: true,
+          metadata: {
+            location_id: locationId,
+            charge_count: String(chargeCount),
+          },
+        });
 
         const finalized = await stripe.invoices.finalizeInvoice(invoice.id!);
-        if (!hasDefaultPM) {
-          await stripe.invoices.sendInvoice(finalized.id!);
-        }
+        await stripe.invoices.sendInvoice(finalized.id!);
 
         totalAmountCents += amountCents;
         invoiceCount++;
 
         console.log(
-          `[bi-weekly-billing] ${hasDefaultPM ? "Auto-charged" : "Sent"} invoice ${finalized.id} ` +
-            `for location ${locationId}: $${(amountCents / 100).toFixed(2)} (${chargeCount} appts)`,
+          `[monthly-billing] Sent invoice ${finalized.id} for location ${locationId}: ` +
+            `$${(amountCents / 100).toFixed(2)} (${chargeCount} appts, due in ${DAYS_UNTIL_DUE}d)`,
         );
 
-        // Mark charges invoiced only after successful finalization
+        // Mark charges invoiced only after successful finalization + send.
         const chargeIds = locationCharges.map((c) => c.id);
         await db
           .update(charges)
@@ -158,7 +168,7 @@ export default async function handler(
           .where(sql`${charges.id} = ANY(${chargeIds})`);
       } catch (err: any) {
         console.error(
-          `[bi-weekly-billing] Failed for location ${locationId}:`,
+          `[monthly-billing] Failed for location ${locationId}:`,
           err.message,
         );
         // Do NOT mark charges invoiced — they'll retry next run
@@ -169,6 +179,7 @@ export default async function handler(
       invoiceCount,
       totalCents: totalAmountCents,
       chargesProcessed: tallied.length,
+      locationsSkippedTrustPeriod,
     });
 
     const summary = {
@@ -176,11 +187,12 @@ export default async function handler(
       invoices: invoiceCount,
       totalAmount: `$${(totalAmountCents / 100).toFixed(2)}`,
       chargesProcessed: tallied.length,
+      locationsSkippedTrustPeriod,
     };
-    console.log("[bi-weekly-billing] Complete:", JSON.stringify(summary));
+    console.log("[monthly-billing] Complete:", JSON.stringify(summary));
     return res.status(200).json(summary);
   } catch (err: any) {
-    console.error("[bi-weekly-billing] Fatal:", err.message, err.stack);
+    console.error("[monthly-billing] Fatal:", err.message, err.stack);
     return res.status(500).json({ ok: false, error: err.message });
   }
 }
